@@ -8,7 +8,11 @@
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 
-#endif // _WIN32
+#elif __linux__
+
+#include <sys/socket.h>
+
+#endif 
 
 
 #define MAX_MSG_LEN 50
