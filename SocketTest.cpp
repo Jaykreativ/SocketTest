@@ -3,8 +3,13 @@
 #include <stdio.h>
 #include <thread>
 
+#ifdef _WIN32 // windows specific socket include
+
 #include <WinSock2.h>
 #include <WS2tcpip.h>
+
+#endif // _WIN32
+
 
 #define MAX_MSG_LEN 50
 
@@ -39,6 +44,7 @@ namespace sockets {
 
 }
 
+#ifdef _WIN32
 void startWSA() {
 	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -55,6 +61,7 @@ void startWSA() {
 	}
 
 }
+#endif // _WIN32
 
 void runServer() {
 	const std::string port = "12525";
@@ -196,7 +203,9 @@ void runClient() {
 }
 
 void main() {
+#ifdef _WIN32
 	startWSA();
+#endif // _WIN32
 
 	bool isServer = false;
 	printf("Do you want to run as a Server? (1 server | 0 client)\n");
