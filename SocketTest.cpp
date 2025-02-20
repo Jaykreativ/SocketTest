@@ -17,13 +17,12 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
-#endif 
-
-
-#define MAX_MSG_LEN 50
-
 typedef in_addr IN_ADDR;
 typedef in6_addr IN6_ADDR;
+
+#endif 
+
+#define MAX_MSG_LEN 50
 
 namespace sock {
 	int close(int socket){

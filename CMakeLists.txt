@@ -7,3 +7,10 @@ file(GLOB SocketTest_SRC
 )
 
 add_executable(SocketTest ${SocketTest_SRC})
+
+if(WIN32)
+target_link_libraries(
+	SocketTest PUBLIC
+	"ws2_32.lib"
+)
+endif(WIN32)
