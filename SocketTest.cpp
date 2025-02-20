@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <cstring>
 #include <stdio.h>
 #include <thread>
 
@@ -11,13 +12,28 @@
 #elif __linux__
 
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 #endif 
 
 
 #define MAX_MSG_LEN 50
 
-namespace sockets {
+typedef in_addr IN_ADDR;
+typedef in6_addr IN6_ADDR;
+
+namespace sock {
+	int close(int socket){
+#ifdef _WIN32
+		return closesocket(socket);
+#elif __linux__
+		return close(socket);
+#endif
+	}
+
 	IN_ADDR presentationToAddrIPv4(std::string presentation) {
 		IN_ADDR addr;
 		if (inet_pton(AF_INET, presentation.c_str(), &addr) <= 0) {
@@ -87,26 +103,26 @@ void runServer() {
 
 	for (addrinfo* p = serverInfo; p != nullptr; p = p->ai_next) {
 		if (p->ai_family == AF_INET) {
-			printf("IPv4 Address: %s\n", sockets::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
+			printf("IPv4 Address: %s\n", sock::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
 		}
 		if (p->ai_family == AF_INET6) {
-			printf("IPv6 Address: %s\n", sockets::addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(p->ai_addr)->sin6_addr).c_str());
+			printf("IPv6 Address: %s\n", sock::addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(p->ai_addr)->sin6_addr).c_str());
 		}
 	}
 
 	// creating the socket
-	SOCKET serverSocket;
+	int serverSocket;
 	if ((serverSocket = socket(serverInfo->ai_family, serverInfo->ai_socktype, serverInfo->ai_protocol)) < 0) {
 		perror("socket");
 		exit(2);
 	}
 
 	// enable port reuse
-	const char yes = 1;
+	/*const char yes = 1;
 	if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) == -1) {
 		perror("setsockopt");
 		exit(3);
-	}
+	}*/
 
 	// bind to port
 	if (bind(serverSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
@@ -121,7 +137,7 @@ void runServer() {
 
 	sockaddr_storage clientAddr;
 	socklen_t addrSize = sizeof clientAddr;
-	SOCKET clientSocket;
+	int clientSocket;
 	if ((clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
 		perror("accept");
 		exit(5);
@@ -147,8 +163,8 @@ void runServer() {
 	}
 
 	// free resources
-	closesocket(clientSocket);
-	closesocket(serverSocket);
+	sock::close(clientSocket);
+	sock::close(serverSocket);
 	freeaddrinfo(serverInfo);
 
 	printf("server done\n");
@@ -172,14 +188,14 @@ void runClient() {
 
 	for (addrinfo* p = clientInfo; p != nullptr; p = p->ai_next) {
 		if (p->ai_family == AF_INET) {
-			printf("IPv4 Address: %s\n", sockets::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
+			printf("IPv4 Address: %s\n", sock::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
 		}
 		if (p->ai_family == AF_INET6) {
-			printf("IPv6 Address: %s\n", sockets::addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(p->ai_addr)->sin6_addr).c_str());
+			printf("IPv6 Address: %s\n", sock::addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(p->ai_addr)->sin6_addr).c_str());
 		}
 	}
 
-	SOCKET clientSocket = socket(clientInfo->ai_family, clientInfo->ai_socktype, clientInfo->ai_protocol);
+	int clientSocket = socket(clientInfo->ai_family, clientInfo->ai_socktype, clientInfo->ai_protocol);
 	if (clientSocket < 0) {
 		perror("socket");
 		exit(2);
@@ -200,13 +216,13 @@ void runClient() {
 		printf("message sent: %s\n", msg);
 	}
 
-	closesocket(clientSocket);
+	sock::close(clientSocket);
 	freeaddrinfo(clientInfo);
 	
 	printf("client done\n");
 }
 
-void main() {
+int main() {
 #ifdef _WIN32
 	startWSA();
 #endif // _WIN32
@@ -222,5 +238,5 @@ void main() {
 	}
 
 	system("pause");
-	return;
+	return 0;
 }

@@ -7,8 +7,3 @@ file(GLOB SocketTest_SRC
 )
 
 add_executable(SocketTest ${SocketTest_SRC})
-
-target_link_libraries(
-	SocketTest PUBLIC
-	"ws2_32.lib"
-)
