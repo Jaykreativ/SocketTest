@@ -82,6 +82,30 @@ void startWSA() {
 }
 #endif // _WIN32
 
+void serverLoop(int clientSocket, bool& stopped) {
+	// server loop
+	while (true) {
+		char buf[MAX_MSG_LEN + 1] = "";
+		int bytesRead = recv(clientSocket, buf, MAX_MSG_LEN, 0);
+		if (bytesRead == -1) {
+			perror("recv");
+			continue;
+		}
+
+		// return on disconnect
+		if (bytesRead == 0) {
+			return;
+		}
+		// exit on stop
+		if (strcmp(buf, "stop") == 0) {
+			stopped = true;
+			return;
+		}
+		buf[bytesRead] = '\0';
+		printf("message received: %s\n", buf);
+	}
+}
+
 void runServer() {
 	const std::string port = "12525";
 	const int backlog = 20;
@@ -134,35 +158,22 @@ void runServer() {
 		exit(5);
 	}
 
-	sockaddr_storage clientAddr;
-	socklen_t addrSize = sizeof clientAddr;
-	int clientSocket;
-	if ((clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
-		perror("accept");
-		exit(5);
-	}
+	bool stopped = false;
+	while (!stopped)
+	{
+		sockaddr_storage clientAddr;
+		socklen_t addrSize = sizeof clientAddr;
+		int clientSocket;
+		if ((clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
+			perror("accept");
+			exit(5);
+		}
 
-	while(true) {
-		char buf[MAX_MSG_LEN] = "";
-		int bytesRead = recv(clientSocket, buf, MAX_MSG_LEN, 0);
-		if (bytesRead == -1) {
-			perror("recv");
-			continue;
-		}
-		// exit on disconnect
-		if (bytesRead == 0) {
-			break;
-		}
-		if (bytesRead < MAX_MSG_LEN) {
-			buf[bytesRead] = '\0';
-			printf("message received: %s\n", buf);
-		}
-		else
-			printf("message too long(max %i chars)\n", MAX_MSG_LEN);
+		serverLoop(clientSocket, stopped);
+		sock::close(clientSocket);
 	}
 
 	// free resources
-	sock::close(clientSocket);
 	sock::close(serverSocket);
 	freeaddrinfo(serverInfo);
 
@@ -174,44 +185,63 @@ void runClient() {
 
 	addrinfo hints;
 	addrinfo* clientInfo;
+	int clientSocket;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 
-	int status;
-	if ((status = getaddrinfo("127.0.0.1", port.c_str(), &hints, &clientInfo)) != 0) {
-		fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
-		exit(1);
-	}
+	// get ip address from user and connect
+	bool wrongIP;
+	do {
+		wrongIP = false;
 
-	for (addrinfo* p = clientInfo; p != nullptr; p = p->ai_next) {
-		if (p->ai_family == AF_INET) {
-			printf("IPv4 Address: %s\n", sock::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
+		std::string ipString;
+		printf("To which IP address do you want to connect to? (format x.x.x.x with x 0 - 255)\n>> ");
+		std::cin >> ipString;
+
+		int status;
+		if ((status = getaddrinfo(ipString.c_str(), port.c_str(), &hints, &clientInfo)) != 0) {
+			fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
+			wrongIP = true;
+			continue;
 		}
-		if (p->ai_family == AF_INET6) {
-			printf("IPv6 Address: %s\n", sock::addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(p->ai_addr)->sin6_addr).c_str());
+
+		for (addrinfo* p = clientInfo; p != nullptr; p = p->ai_next) {
+			if (p->ai_family == AF_INET) {
+				printf("connecting to IPv4 Address: %s\n", sock::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
+			}
+			if (p->ai_family == AF_INET6) {
+				printf("connecting to IPv6 Address: %s\n", sock::addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(p->ai_addr)->sin6_addr).c_str());
+			}
+		}
+
+		clientSocket = socket(clientInfo->ai_family, clientInfo->ai_socktype, clientInfo->ai_protocol);
+		if (clientSocket < 0) {
+			perror("socket");
+			wrongIP = true;
+			continue;
+		}
+
+		if (connect(clientSocket, clientInfo->ai_addr, clientInfo->ai_addrlen) < 0) {
+			perror("connect");
+			wrongIP = true;
+			continue;
 		}
 	}
+	while (wrongIP);
 
-	int clientSocket = socket(clientInfo->ai_family, clientInfo->ai_socktype, clientInfo->ai_protocol);
-	if (clientSocket < 0) {
-		perror("socket");
-		exit(2);
-	}
-
-	if (connect(clientSocket, clientInfo->ai_addr, clientInfo->ai_addrlen) < 0) {
-		perror("connect");
-		exit(3);
-	}
-
+	// client loop
 	while(true) {
 		char msg[MAX_MSG_LEN] = "";
+		printf(">> ");
 		std::cin.getline(msg, MAX_MSG_LEN);
 		int len = strlen(msg);
 		if (strcmp(msg, "esc")==0)
 			break;
 		send(clientSocket, msg, len, 0);
+		if (strcmp(msg, "stop") == 0)
+			break;
 		printf("message sent: %s\n", msg);
 	}
 
@@ -227,7 +257,7 @@ int main() {
 #endif // _WIN32
 
 	bool isServer = false;
-	printf("Do you want to run as a Server? (1 server | 0 client)\n");
+	printf("Do you want to run as a Server? (1 server | 0 client)\n>> ");
 	std::cin >> isServer;
 	if (isServer) {
 		runServer();
@@ -236,6 +266,9 @@ int main() {
 		runClient();
 	}
 
+#ifdef _WIN32
 	system("pause");
+#endif // _WIN32
+
 	return 0;
 }
