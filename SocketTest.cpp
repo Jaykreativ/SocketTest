@@ -36,7 +36,7 @@ namespace sock {
 #endif
 	}
 
-	int poll(pollfd fds[], size_t nfds, int timeout) {
+	int pollState(pollfd fds[], size_t nfds, int timeout) {
 #ifdef _WIN32
 		return WSAPoll(fds, nfds, timeout);
 #elif __linux__
@@ -211,7 +211,7 @@ void serverLoop(int serverSocket) {
 		std::vector<pollfd> pollfds;
 		generatePollArray(pollfds, serverSocket, clientSockets);
 
-		int pollCount = sock::poll(pollfds.data(), pollfds.size(), pollTimeout);
+		int pollCount = sock::pollState(pollfds.data(), pollfds.size(), pollTimeout);
 
 		if (pollCount == -1) {
 			sock::printLastError("poll");
