@@ -2,7 +2,9 @@
 #include <string>
 #include <cstring>
 #include <stdio.h>
-#include <thread>
+#include <vector>
+#include <memory>
+
 
 #ifdef _WIN32 // windows specific socket include
 
@@ -16,6 +18,7 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <poll.h>
 
 typedef in_addr IN_ADDR;
 typedef in6_addr IN6_ADDR;
@@ -30,6 +33,14 @@ namespace sock {
 		return closesocket(socket);
 #elif __linux__
 		return close(socket);
+#endif
+	}
+
+	int poll(pollfd fds[], size_t nfds, int timeout) {
+#ifdef _WIN32
+		return WSAPoll(fds, nfds, timeout);
+#elif __linux__
+		return poll(fds, nfds, timeout);
 #endif
 	}
 
@@ -60,7 +71,34 @@ namespace sock {
 		inet_ntop(AF_INET6, &addr, ip6, INET6_ADDRSTRLEN);
 		return ip6;
 	}
+	std::string addrToPresentation(sockaddr* sa) {
+		if (sa->sa_family == AF_INET) {
+			return addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(sa)->sin_addr);
+		}
 
+		return addrToPresentationIPv6(reinterpret_cast<sockaddr_in6*>(sa)->sin6_addr);
+	}
+
+	int lastError() {
+#ifdef _WIN32
+		return WSAGetLastError();
+#elif __linux__
+		return errno;
+#endif
+	}
+
+	void printLastError(const char* msg) {
+#ifdef _WIN32
+		char* s = NULL;
+		FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+			NULL, WSAGetLastError(),
+			MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+			(LPSTR)&s, 0, NULL);
+		fprintf(stderr, "%s: %s\n", msg, s);
+#elif __linux__
+		perror(msg);
+#endif
+	}
 }
 
 #ifdef _WIN32
@@ -82,27 +120,107 @@ void startWSA() {
 }
 #endif // _WIN32
 
-void serverLoop(int clientSocket, bool& stopped) {
-	// server loop
-	while (true) {
-		char buf[MAX_MSG_LEN + 1] = "";
-		int bytesRead = recv(clientSocket, buf, MAX_MSG_LEN, 0);
-		if (bytesRead == -1) {
-			perror("recv");
-			continue;
+enum Result {
+	eSTOP,
+	eSUCCESS,
+	eERROR,
+	ePOLL_TIMEOUT
+};
+
+Result receiveData(int socket) {
+	char buf[MAX_MSG_LEN + 1] = "";
+	int bytesRead = recv(socket, buf, MAX_MSG_LEN, 0);
+	if (bytesRead == -1) {
+		perror("recv");
+		return eERROR;
+	}
+	// exit on stop
+	if (strcmp(buf, "stop") == 0) {
+		return eSTOP;
+	}
+	buf[bytesRead] = '\0';
+	printf("message received: %s\n", buf);
+}
+
+Result destroyClient(int clientSocket, int clientNum, std::vector<int>& clientSockets) {
+	if (sock::close(clientSocket) < 0) {
+		perror("close");
+		exit(errno);
+	}
+	clientSockets.erase(clientSockets.begin()+clientNum);
+	return eSUCCESS;
+}
+
+Result handlePoll(const std::vector<pollfd>& pollfds, int pollCount, int serverSocket, std::vector<int>& clientSockets) {
+	int checkedPollCount = 0;
+	int i = 0;
+	for (pollfd poll : pollfds) {
+		if (poll.revents & POLLIN && i == 0) {// accept client
+			sockaddr_storage clientAddr;
+			socklen_t addrSize = sizeof clientAddr;
+			int clientSocket;
+			if ((clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
+				perror("accept");
+				exit(errno);
+			}
+			clientSockets.push_back(clientSocket);
+
+			printf("Client connected: %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str());
 		}
 
-		// return on disconnect
-		if (bytesRead == 0) {
-			return;
+		if (poll.revents & POLLIN && i != 0) { // read the polled socket with recv
+			Result result = receiveData(poll.fd);
+			if (result == eSTOP)// return stop
+				return result;
 		}
-		// exit on stop
-		if (strcmp(buf, "stop") == 0) {
-			stopped = true;
-			return;
+		if (poll.revents & POLLHUP) { // destroy the polled clientSocket
+			sockaddr clientAddr;
+			socklen_t addrSize = sizeof clientAddr;
+			getpeername(poll.fd, &clientAddr, &addrSize);
+			printf("Client disconnected: %s", sock::addrToPresentation(&clientAddr).c_str());
+			Result result = destroyClient(poll.fd, i-1, clientSockets);
 		}
-		buf[bytesRead] = '\0';
-		printf("message received: %s\n", buf);
+
+		if (poll.revents & (POLLIN | POLLHUP))
+			checkedPollCount++;
+		if (checkedPollCount >= pollCount)
+			return eSUCCESS;
+		i++;
+	}
+
+	return ePOLL_TIMEOUT;
+}
+
+void generatePollArray(std::vector<pollfd>& pollfds, int serverSocket, const std::vector<int>& clientSockets) {
+	pollfds.resize(clientSockets.size() + 1); // clientSockets + serverSocket
+	pollfds[0].fd = serverSocket;
+	pollfds[0].events = POLLIN;
+	for (int i = 1; i < pollfds.size(); i++) {
+		pollfds[i].fd = clientSockets[i - 1];
+		pollfds[i].events = POLLIN;
+	}
+}
+
+void serverLoop(int serverSocket) {
+	int pollTimeout = -1;
+
+	std::vector<int> clientSockets;
+
+	// server loop
+	while (true) {
+		std::vector<pollfd> pollfds;
+		generatePollArray(pollfds, serverSocket, clientSockets);
+
+		int pollCount = sock::poll(pollfds.data(), pollfds.size(), pollTimeout);
+
+		if (pollCount == -1) {
+			sock::printLastError("poll");
+			exit(sock::lastError());
+		}
+
+		Result result = handlePoll(pollfds, pollCount, serverSocket, clientSockets);
+		if (result == eSTOP)// stop has been sent
+			return;
 	}
 }
 
@@ -158,24 +276,9 @@ void runServer() {
 		exit(5);
 	}
 
-	bool stopped = false;
-	while (!stopped)
-	{
-		sockaddr_storage clientAddr;
-		socklen_t addrSize = sizeof clientAddr;
-		int clientSocket;
-		if ((clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
-			perror("accept");
-			exit(5);
-		}
-
-		serverLoop(clientSocket, stopped);
-		sock::close(clientSocket);
-	}
-
-	// free resources
-	sock::close(serverSocket);
 	freeaddrinfo(serverInfo);
+
+	serverLoop(serverSocket);
 
 	printf("server done\n");
 }
