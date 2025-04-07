@@ -116,7 +116,10 @@ void startWSA() {
 		WSACleanup();
 		exit(1);
 	}
+}
 
+void closeWSA() {
+	WSACleanup();
 }
 #endif // _WIN32
 
@@ -202,25 +205,38 @@ void generatePollArray(std::vector<pollfd>& pollfds, int serverSocket, const std
 }
 
 void serverLoop(int serverSocket) {
-	int pollTimeout = -1;
+	//int pollTimeout = -1;
 
-	std::vector<int> clientSockets;
+	//std::vector<int> clientSockets;
 
 	// server loop
 	while (true) {
-		std::vector<pollfd> pollfds;
-		generatePollArray(pollfds, serverSocket, clientSockets);
-
-		int pollCount = sock::pollState(pollfds.data(), pollfds.size(), pollTimeout);
-
-		if (pollCount == -1) {
-			sock::printLastError("poll");
-			exit(sock::lastError());
+		char buf[MAX_MSG_LEN + 1] = "";
+		sockaddr_storage clientAddr;
+		socklen_t addrSize = sizeof clientAddr;
+		int bytesRead = recvfrom(serverSocket, buf, MAX_MSG_LEN, 0, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize);
+		if (bytesRead == -1) {
+			sock::printLastError("Server(recvfrom)");
+		}
+		else {
+			buf[bytesRead] = '\0';
+			printf("Message received from client(%s): %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str(), buf);
 		}
 
-		Result result = handlePoll(pollfds, pollCount, serverSocket, clientSockets);
-		if (result == eSTOP)// stop has been sent
-			return;
+
+		//std::vector<pollfd> pollfds;
+		//generatePollArray(pollfds, serverSocket, clientSockets);
+		//
+		//int pollCount = sock::pollState(pollfds.data(), pollfds.size(), pollTimeout);
+		//
+		//if (pollCount == -1) {
+		//	sock::printLastError("poll");
+		//	exit(sock::lastError());
+		//}
+		//
+		//Result result = handlePoll(pollfds, pollCount, serverSocket, clientSockets);
+		//if (result == eSTOP)// stop has been sent
+		//	return;
 	}
 }
 
@@ -233,7 +249,7 @@ void runServer() {
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_socktype = SOCK_DGRAM;
 	hints.ai_flags = AI_PASSIVE;
 
 	int status;
@@ -271,15 +287,14 @@ void runServer() {
 		exit(4);
 	}
 
-	if (listen(serverSocket, backlog) < 0) {
-		perror("listen");
-		exit(5);
-	}
-
-	freeaddrinfo(serverInfo);
+	//if (listen(serverSocket, backlog) < 0) {
+	//	perror("listen");
+	//	exit(5);
+	//}
 
 	serverLoop(serverSocket);
 
+	freeaddrinfo(serverInfo);
 	printf("server done\n");
 }
 
@@ -287,12 +302,12 @@ void runClient() {
 	const std::string port = "12525";
 
 	addrinfo hints;
-	addrinfo* clientInfo;
-	int clientSocket;
+	addrinfo* serverInfo;
+	int serverSocket;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_socktype = SOCK_DGRAM;
 
 	// get ip address from user and connect
 	bool wrongIP;
@@ -304,13 +319,13 @@ void runClient() {
 		std::cin >> ipString;
 
 		int status;
-		if ((status = getaddrinfo(ipString.c_str(), port.c_str(), &hints, &clientInfo)) != 0) {
+		if ((status = getaddrinfo(ipString.c_str(), port.c_str(), &hints, &serverInfo)) != 0) {
 			fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
 			wrongIP = true;
 			continue;
 		}
 
-		for (addrinfo* p = clientInfo; p != nullptr; p = p->ai_next) {
+		for (addrinfo* p = serverInfo; p != nullptr; p = p->ai_next) {
 			if (p->ai_family == AF_INET) {
 				printf("connecting to IPv4 Address: %s\n", sock::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
 			}
@@ -319,18 +334,18 @@ void runClient() {
 			}
 		}
 
-		clientSocket = socket(clientInfo->ai_family, clientInfo->ai_socktype, clientInfo->ai_protocol);
-		if (clientSocket < 0) {
+		serverSocket = socket(serverInfo->ai_family, serverInfo->ai_socktype, serverInfo->ai_protocol);
+		if (serverSocket < 0) {
 			perror("socket");
 			wrongIP = true;
 			continue;
 		}
 
-		if (connect(clientSocket, clientInfo->ai_addr, clientInfo->ai_addrlen) < 0) {
-			perror("connect");
-			wrongIP = true;
-			continue;
-		}
+		//if (connect(clientSocket, clientInfo->ai_addr, clientInfo->ai_addrlen) < 0) {
+		//	perror("connect");
+		//	wrongIP = true;
+		//	continue;
+		//}
 	}
 	while (wrongIP);
 
@@ -342,14 +357,14 @@ void runClient() {
 		int len = strlen(msg);
 		if (strcmp(msg, "esc")==0)
 			break;
-		send(clientSocket, msg, len, 0);
+		sendto(serverSocket, msg, len, 0, serverInfo->ai_addr, sizeof(sockaddr));
 		if (strcmp(msg, "stop") == 0)
 			break;
 		printf("message sent: %s\n", msg);
 	}
 
-	sock::close(clientSocket);
-	freeaddrinfo(clientInfo);
+	sock::close(serverSocket);
+	freeaddrinfo(serverInfo);
 	
 	printf("client done\n");
 }
