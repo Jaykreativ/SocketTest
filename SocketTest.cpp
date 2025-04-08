@@ -339,11 +339,11 @@ void runClient() {
 			continue;
 		}
 
-		//if (connect(clientSocket, clientInfo->ai_addr, clientInfo->ai_addrlen) < 0) {
-		//	perror("connect");
-		//	wrongIP = true;
-		//	continue;
-		//}
+		if (connect(serverSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
+			sock::printLastError("client connect");
+			wrongIP = true;
+			continue;
+		}
 	}
 	while (wrongIP);
 
@@ -355,7 +355,7 @@ void runClient() {
 		int len = strlen(msg);
 		if (strcmp(msg, "esc")==0)
 			break;
-		sendto(serverSocket, msg, len, 0, serverInfo->ai_addr, sizeof(sockaddr));
+		send(serverSocket, msg, len, 0);
 		if (strcmp(msg, "stop") == 0)
 			break;
 		printf("message sent: %s\n", msg);
