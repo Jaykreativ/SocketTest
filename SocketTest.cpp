@@ -205,38 +205,41 @@ void generatePollArray(std::vector<pollfd>& pollfds, int serverSocket, const std
 }
 
 void serverLoop(int serverSocket) {
-	//int pollTimeout = -1;
-
-	//std::vector<int> clientSockets;
-
 	// server loop
 	while (true) {
-		char buf[MAX_MSG_LEN + 1] = "";
-		sockaddr_storage clientAddr;
-		socklen_t addrSize = sizeof clientAddr;
-		int bytesRead = recvfrom(serverSocket, buf, MAX_MSG_LEN, 0, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize);
-		if (bytesRead == -1) {
-			sock::printLastError("Server(recvfrom)");
-		}
-		else {
-			buf[bytesRead] = '\0';
-			printf("Message received from client(%s): %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str(), buf);
+		pollfd serverPollfd;
+		serverPollfd.fd = serverSocket;
+		serverPollfd.events = POLLIN;
+		serverPollfd.revents = 0;
+		
+		int pollCount = sock::pollState(&serverPollfd, 1, 1000);
+		
+		if (pollCount == -1) {
+			sock::printLastError("poll");
+			exit(sock::lastError());
 		}
 
+		if (pollCount == 0) {
+			printf("poll timeout\n");
+		}
 
-		//std::vector<pollfd> pollfds;
-		//generatePollArray(pollfds, serverSocket, clientSockets);
-		//
-		//int pollCount = sock::pollState(pollfds.data(), pollfds.size(), pollTimeout);
-		//
-		//if (pollCount == -1) {
-		//	sock::printLastError("poll");
-		//	exit(sock::lastError());
-		//}
-		//
-		//Result result = handlePoll(pollfds, pollCount, serverSocket, clientSockets);
-		//if (result == eSTOP)// stop has been sent
-		//	return;
+		if (pollCount > 0) {
+			char buf[MAX_MSG_LEN + 1] = "";
+			sockaddr_storage clientAddr;
+			socklen_t addrSize = sizeof clientAddr;
+			int bytesRead = recvfrom(serverSocket, buf, MAX_MSG_LEN, 0, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize);
+			if (bytesRead == -1) {
+				sock::printLastError("Server(recvfrom)");
+			}
+			else {
+				// exit on stop
+				if (strcmp(buf, "stop") == 0) {
+					return;
+				}
+				buf[bytesRead] = '\0';
+				printf("Message received from client(%s): %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str(), buf);
+			}
+		}
 	}
 }
 
@@ -286,11 +289,6 @@ void runServer() {
 		perror("bind");
 		exit(4);
 	}
-
-	//if (listen(serverSocket, backlog) < 0) {
-	//	perror("listen");
-	//	exit(5);
-	//}
 
 	serverLoop(serverSocket);
 
