@@ -131,7 +131,7 @@ Result receiveData(int socket) {
 	char buf[MAX_MSG_LEN + 1] = "";
 	int bytesRead = recv(socket, buf, MAX_MSG_LEN, 0);
 	if (bytesRead == -1) {
-		perror("recv");
+		sock::printLastError("recv");
 		return eERROR;
 	}
 	// exit on stop
@@ -151,24 +151,34 @@ Result destroyClient(int clientSocket, int clientNum, std::vector<int>& clientSo
 	return eSUCCESS;
 }
 
-Result handlePoll(const std::vector<pollfd>& pollfds, int pollCount, int serverSocket, std::vector<int>& clientSockets) {
+Result handlePoll(const std::vector<pollfd>& pollfds, int pollCount, int serverStreamSocket, int serverDgramSocket, std::vector<int>& clientSockets) {
 	int checkedPollCount = 0;
-	int i = 0;
-	for (pollfd poll : pollfds) {
-		if (poll.revents & POLLIN && i == 0) {// accept client
-			sockaddr_storage clientAddr;
-			socklen_t addrSize = sizeof clientAddr;
-			int clientSocket;
-			if ((clientSocket = accept(serverSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
-				perror("accept");
-				exit(errno);
-			}
-			clientSockets.push_back(clientSocket);
-
-			printf("Client connected: %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str());
+	pollfd streamPoll = pollfds[0];
+	pollfd dgramPoll = pollfds[1];
+	if (streamPoll.revents & POLLIN) {// accept client
+		sockaddr_storage clientAddr;
+		socklen_t addrSize = sizeof clientAddr;
+		int clientSocket;
+		if ((clientSocket = accept(serverStreamSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize)) < 0) {
+			perror("accept");
+			exit(errno);
 		}
+		clientSockets.push_back(clientSocket);
+		
+		printf("Client connected: %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str());
+	}
+	if (dgramPoll.revents & POLLIN) {
+		sockaddr_storage clientAddr;
+		socklen_t addrSize = sizeof clientAddr;
+		char buf[MAX_MSG_LEN + 1] = "";
+		int bytesRead = recvfrom(serverDgramSocket, buf, MAX_MSG_LEN, 0, reinterpret_cast<sockaddr*>(&clientAddr), &addrSize);
+		buf[bytesRead] = '\0';
 
-		if (poll.revents & POLLIN && i != 0) { // read the polled socket with recv
+		printf("message received from: %s\n>> %s\n", sock::addrToPresentation(reinterpret_cast<sockaddr*>(&clientAddr)).c_str(), buf);
+	}
+	for (size_t i = 2; i < pollfds.size(); i++) {
+		pollfd poll = pollfds[i];
+		if (poll.revents & POLLIN) { // read the polled socket with recv
 			Result result = receiveData(poll.fd);
 			if (result == eSTOP)// return stop
 				return result;
@@ -191,17 +201,19 @@ Result handlePoll(const std::vector<pollfd>& pollfds, int pollCount, int serverS
 	return ePOLL_TIMEOUT;
 }
 
-void generatePollArray(std::vector<pollfd>& pollfds, int serverSocket, const std::vector<int>& clientSockets) {
-	pollfds.resize(clientSockets.size() + 1); // clientSockets + serverSocket
-	pollfds[0].fd = serverSocket;
+void generatePollArray(std::vector<pollfd>& pollfds, int serverStreamSocket, int serverDgramSocket, const std::vector<int>& clientSockets) {
+	pollfds.resize(clientSockets.size() + 2); // clientSockets + serverSockets
+	pollfds[0].fd = serverStreamSocket;
 	pollfds[0].events = POLLIN;
-	for (int i = 1; i < pollfds.size(); i++) {
-		pollfds[i].fd = clientSockets[i - 1];
+	pollfds[1].fd = serverDgramSocket;
+	pollfds[1].events = POLLIN;
+	for (int i = 2; i < pollfds.size(); i++) {
+		pollfds[i].fd = clientSockets[i - 2];
 		pollfds[i].events = POLLIN;
 	}
 }
 
-void serverLoop(int serverSocket) {
+void serverLoop(int serverStreamSocket, int serverDgramSocket) {
 	int pollTimeout = -1;
 
 	std::vector<int> clientSockets;
@@ -209,7 +221,7 @@ void serverLoop(int serverSocket) {
 	// server loop
 	while (true) {
 		std::vector<pollfd> pollfds;
-		generatePollArray(pollfds, serverSocket, clientSockets);
+		generatePollArray(pollfds, serverStreamSocket, serverDgramSocket, clientSockets);
 
 		int pollCount = sock::pollState(pollfds.data(), pollfds.size(), pollTimeout);
 
@@ -218,7 +230,7 @@ void serverLoop(int serverSocket) {
 			exit(sock::lastError());
 		}
 
-		Result result = handlePoll(pollfds, pollCount, serverSocket, clientSockets);
+		Result result = handlePoll(pollfds, pollCount, serverStreamSocket, serverDgramSocket, clientSockets);
 		if (result == eSTOP)// stop has been sent
 			return;
 	}
@@ -233,7 +245,6 @@ void runServer() {
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
 	int status;
@@ -252,10 +263,15 @@ void runServer() {
 	}
 
 	// creating the socket
-	int serverSocket;
-	if ((serverSocket = socket(serverInfo->ai_family, serverInfo->ai_socktype, serverInfo->ai_protocol)) < 0) {
-		perror("socket");
-		exit(2);
+	int serverStreamSocket;
+	int serverDgramSocket;
+	if ((serverStreamSocket = socket(serverInfo->ai_family, SOCK_STREAM, serverInfo->ai_protocol)) < 0) {
+		sock::printLastError("socket(stream)");
+		exit(sock::lastError());
+	}
+	if ((serverDgramSocket = socket(serverInfo->ai_family, SOCK_DGRAM, serverInfo->ai_protocol)) < 0) {
+		sock::printLastError("socket(dgram)");
+		exit(sock::lastError());
 	}
 
 	// enable port reuse
@@ -266,19 +282,26 @@ void runServer() {
 	}*/
 
 	// bind to port
-	if (bind(serverSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
-		perror("bind");
-		exit(4);
+	if (bind(serverStreamSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
+		sock::printLastError("bind(stream)");
+		exit(sock::lastError());
+	}
+	if (bind(serverDgramSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
+		sock::printLastError("bind(dgram)");
+		exit(sock::lastError());
 	}
 
-	if (listen(serverSocket, backlog) < 0) {
-		perror("listen");
-		exit(5);
+	if (listen(serverStreamSocket, backlog) < 0) {
+		sock::printLastError("listen");
+		exit(sock::lastError());
 	}
 
 	freeaddrinfo(serverInfo);
 
-	serverLoop(serverSocket);
+	serverLoop(serverStreamSocket, serverDgramSocket);
+
+	sock::close(serverStreamSocket);
+	sock::close(serverDgramSocket);
 
 	printf("server done\n");
 }
@@ -287,12 +310,12 @@ void runClient() {
 	const std::string port = "12525";
 
 	addrinfo hints;
-	addrinfo* clientInfo;
-	int clientSocket;
+	addrinfo* serverInfo;
+	int streamSocket;
+	int dgramSocket;
 
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
-	hints.ai_socktype = SOCK_STREAM;
 
 	// get ip address from user and connect
 	bool wrongIP;
@@ -304,13 +327,13 @@ void runClient() {
 		std::cin >> ipString;
 
 		int status;
-		if ((status = getaddrinfo(ipString.c_str(), port.c_str(), &hints, &clientInfo)) != 0) {
+		if ((status = getaddrinfo(ipString.c_str(), port.c_str(), &hints, &serverInfo)) != 0) {
 			fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
 			wrongIP = true;
 			continue;
 		}
 
-		for (addrinfo* p = clientInfo; p != nullptr; p = p->ai_next) {
+		for (addrinfo* p = serverInfo; p != nullptr; p = p->ai_next) {
 			if (p->ai_family == AF_INET) {
 				printf("connecting to IPv4 Address: %s\n", sock::addrToPresentationIPv4(reinterpret_cast<sockaddr_in*>(p->ai_addr)->sin_addr).c_str());
 			}
@@ -319,15 +342,26 @@ void runClient() {
 			}
 		}
 
-		clientSocket = socket(clientInfo->ai_family, clientInfo->ai_socktype, clientInfo->ai_protocol);
-		if (clientSocket < 0) {
-			perror("socket");
+		streamSocket = socket(serverInfo->ai_family, SOCK_STREAM, serverInfo->ai_protocol);
+		if (streamSocket < 0) {
+			perror("socket(stream)");
+			wrongIP = true;
+			continue;
+		}
+		dgramSocket = socket(serverInfo->ai_family, SOCK_DGRAM, serverInfo->ai_protocol);
+		if (dgramSocket < 0) {
+			perror("socket(dgram)");
 			wrongIP = true;
 			continue;
 		}
 
-		if (connect(clientSocket, clientInfo->ai_addr, clientInfo->ai_addrlen) < 0) {
-			perror("connect");
+		if (connect(streamSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
+			perror("connect(stream)");
+			wrongIP = true;
+			continue;
+		}
+		if (connect(dgramSocket, serverInfo->ai_addr, serverInfo->ai_addrlen) < 0) {
+			perror("connect(dgram)");
 			wrongIP = true;
 			continue;
 		}
@@ -342,14 +376,15 @@ void runClient() {
 		int len = strlen(msg);
 		if (strcmp(msg, "esc")==0)
 			break;
-		send(clientSocket, msg, len, 0);
+		send(streamSocket, msg, len, 0);
+		send(dgramSocket, msg, len, 0);
 		if (strcmp(msg, "stop") == 0)
 			break;
 		printf("message sent: %s\n", msg);
 	}
 
-	sock::close(clientSocket);
-	freeaddrinfo(clientInfo);
+	sock::close(streamSocket);
+	freeaddrinfo(serverInfo);
 	
 	printf("client done\n");
 }
